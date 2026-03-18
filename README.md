@@ -1,5 +1,10 @@
 #     ESP32-2p8inYEL_weather
 
+<p align="center">
+  <img src="IMG_ESP32-2p8inYEL_weather.jpeg" alt="Device in action" width="500">
+</p>
+
+
 Code running on ESP32-2432S028R (ESP32 Cheap Yellow Display).
 
 The hardware consist of:
