@@ -10,7 +10,7 @@ The hardware consist of:
 The Enclosure allows the light detector to be used, but the code does not make use of it in in this project
 The board is powered by a USB-C cord (5V)
 The code relies on the www.weatherapi.com API for which the user is expected to provide an API key (free).
-The code allows for other api/url to be defined, though the code may need some adjustment on the html filters and variable names
+The code allows for other api/url to be defined, though the code may need some adjustment on the html filters and variable names if a different API than weatherapi.com is used.
 
   The code performs these actions:
   - Fetch the current weather data every minutes, for 2 locations of choice
