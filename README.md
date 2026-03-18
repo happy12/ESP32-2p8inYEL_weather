@@ -22,7 +22,7 @@ The code allows for other api/url to be defined, though the code may need some a
   - Some options are available to the user via the mdns web page http://esp32-yellow.local
   - Draws red X if fetch was not succesful, or red square if the fetch could not reach the server for any reasons
   - Device can be set to reset daily to ensure stability
-  - Code was develop to minimize heap memory fragmentation, and so the use of String variable is non-existent
+  - Code was develop to minimize heap memory fragmentation, and so the use of String variable is non-existent, as well as the omission of the arduino function 'delay'
 
 3D printable enclosure can be downloaded via https://www.printables.com/model/1641665-esp32-cheap-yellow-display-enclosure
  
