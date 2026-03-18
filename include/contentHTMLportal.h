@@ -44,12 +44,29 @@ const char contentHTMLportal[] PROGMEM = R"rawliteral(
             btn.disabled = false; // Always re-enable the button
           }
         }
+
+        function refreshMac() {
+          fetch('/mac')
+            .then(response => {
+              console.log('Fetch Mac:', response.status);
+              return response.text();
+            })
+            .then(data => {
+              if (data !== "") {
+                console.log('Mac fetched:', data);
+                document.getElementById("mac").textContent = data;
+              }
+            })
+            .catch(err => console.warn('Mac Fetch error:', err));
+        }
+
         window.onload = function() {
           var ua = navigator.userAgent;
           var type = 'Generic User';
           if (/iPhone|iPad|iPod/.test(ua)) type = 'iOS User';
           else if (/Android/.test(ua)) type = 'Android User';
           document.getElementById('device-display').innerText = type;
+          refreshMac();
           refreshWiFi();
         }
       </script>
@@ -57,6 +74,7 @@ const char contentHTMLportal[] PROGMEM = R"rawliteral(
 
       <h2 style='text-align: center;'>Network Wifi Setup (<span id='device-display'>...</span>)</h2>
       <h2>Select Your Wi-Fi</h2>
+      <p>MAC: <span id="mac">--</span></p>
 
       <form action='/save' method='POST'>
 

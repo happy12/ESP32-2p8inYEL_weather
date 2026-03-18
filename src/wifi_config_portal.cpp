@@ -453,6 +453,14 @@ void StartWifiCaptivePortal(const char *cstr_basic, char* hostname, size_t hostn
     SsidScanner(stream);
     request->send(stream);
   });
+  server.on("/mac", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send(200, "text/plain", WiFi.macAddress().c_str());
+    /*char macaddress[18];
+    strlcpy(macaddress, WiFi.macAddress().c_str(), sizeof(macaddress));
+    AsyncResponseStream *stream = request->beginResponseStream("text/html"); 
+    stream->printf(macaddress);
+    request->send(stream);*/
+  });
   //this handler should be last, it is the captive portal to setup the wifi
   server.addHandler(new CaptiveRequestHandler()).setFilter(ON_AP_FILTER);  // only when requested from AP
   snprintf(hostname, hostnameLEN, "%s", str_withID);
