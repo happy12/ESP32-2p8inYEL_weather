@@ -22,7 +22,7 @@ The code allows for other api/url to be defined, though the code may need some a
   - Fetch 3 days of forecast weather data every minutes, for one of the 2 location defined by the user
   - The 3 days forecast are today, tomorrow, and after tomorrow
   - Draws 2 sprites for the current weather, and 3 sprites for the forecast weather
-  - Wifi credentials are input by the user via an access portal the first time the device is powered
+  - Wifi credentials are input by the user via a captive portal the first time the device is powered
   - Wifi credentials are saved onto the device for future use
   - Some options are available to the user via the mdns web page http://esp32-yellow.local
   - Draws red X if fetch was not succesful, or red square if the fetch could not reach the server for any reasons
