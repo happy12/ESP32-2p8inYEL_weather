@@ -1,5 +1,27 @@
 #include "wifi_config_portal.h"
 
+// Wraps a WiFiClient stream so that read() blocks (with yields) until a byte
+// arrives or the connection closes / timeout expires.  This prevents ArduinoJson
+// from treating the gaps between TLS decrypt records as EOF (IncompleteInput).
+class BlockingStream : public Stream {
+public:
+    BlockingStream(WiFiClient& s, unsigned long timeoutMs)
+        : _s(s), _deadline(millis() + timeoutMs) {}
+    int available() override { return _s.available(); }
+    int peek()      override { return _s.peek(); }
+    size_t write(uint8_t) override { return 0; }
+    int read() override {
+        while (!_s.available()) {
+            if (millis() > _deadline || !_s.connected()) return -1;
+            vTaskDelay(pdMS_TO_TICKS(2));
+        }
+        return _s.read();
+    }
+private:
+    WiFiClient& _s;
+    unsigned long _deadline;
+};
+
 
 #include <AsyncTCP.h>
 #include <WiFiUdp.h>//to handle some disconnect events shit
@@ -255,7 +277,7 @@ bool loadPreferences() {
     
 
     len = preferences.getString("apiUrlBase", apiUrlBase, sizeof(apiUrlBase));
-    if (len == 0) strlcpy(apiUrlBase, "http://api.weatherapi.com/v1/current.json?key=", sizeof(apiUrlBase));
+    if (len == 0) strlcpy(apiUrlBase, "https://api.weatherapi.com/v1/current.json?key=", sizeof(apiUrlBase));
     len = preferences.getString("apiKEY", apiKEY, sizeof(apiKEY));
     if (len == 0) strlcpy(apiKEY, "1234", sizeof(apiKEY));
     len = preferences.getString("apiUrlFore", apiUrlForecast, sizeof(apiUrlForecast));
@@ -393,7 +415,7 @@ void SsidScanner(AsyncResponseStream *stream) {
   char strBarRSSI[16];
   int n = WiFi.scanComplete();
   if (n <= 0) { //-2 = WIFI_SCAN_RUNNING, -1: fail, 0 found, just do it again
-     n = WiFi.scanNetworks(); 
+     n = WiFi.scanNetworks();
   }
   if (n <= 0) return;
   if (n > MAX_SSID_LIST) n = MAX_SSID_LIST; // Cap to prevent buffer overflow
@@ -485,7 +507,7 @@ void printStreamToSerial(HTTPClient &http) {
   DEBUG_PRINTLN("\n--- Response Body End ---");  
 }//printStreamToSerial
 
-void fetchWeatherData(WeatherCurrent &wcurrent, const char *apiLoc, const uint8_t locationIndex) {
+void fetchWeatherData(WeatherCurrent &wcurrent, const char *apiLoc, const uint8_t locationIndex, bool currentOnly) {
   if (WiFi.status() == WL_CONNECTED) {
     WeatherCurrent localCurrent;
     //uint8_t temp_apiDaysForecast=0;
@@ -519,7 +541,9 @@ void fetchWeatherData(WeatherCurrent &wcurrent, const char *apiLoc, const uint8_
     // For the designated forecast location, swap current.json → forecast.json and
     // append the &days=N suffix so the single API response carries both current
     // weather and forecast data.
-    const bool doForecast = (locationIndex == temp_apiForecastLocation);
+    // currentOnly=true: Phase 1 uses current.json for both locations to keep heap pressure low.
+    // forecast.json is fetched separately in Phase 1.5, after C1+C2 sprites free ~75KB.
+    const bool doForecast = !currentOnly && (locationIndex == temp_apiForecastLocation);
     char fetchUrlBase[128];
     char fetchUrlSuffix[24] = {};
     if (doForecast) {
@@ -551,11 +575,27 @@ void fetchWeatherData(WeatherCurrent &wcurrent, const char *apiLoc, const uint8_
                        "http:", localCurrent.urlicon, "/cache");
     }
 
-    if (xSemaphoreTake(xMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-      wcurrent = localCurrent;
-      xSemaphoreGive(xMutex);
+    if (localCurrent.isFetchOK) {
+      // Successful fetch: write everything back.
+      if (xSemaphoreTake(xMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        wcurrent = localCurrent;
+        xSemaphoreGive(xMutex);
+      } else {
+        DEBUG_PRINTLN("fetchWeatherData: mutex timeout — write-back dropped");
+      }
+    } else if (!doForecast) {
+      // current.json failed: mark as stale but preserve last-known values so the
+      // display still shows the previous temperature / wind / location under the X.
+      DEBUG_PRINTLN("[fetch] current.json failed — preserving previous data, isFetchOK=false");
+      if (xSemaphoreTake(xMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        wcurrent.isFetchOK = false;
+        xSemaphoreGive(xMutex);
+      }
     } else {
-      DEBUG_PRINTLN("fetchWeatherData: mutex timeout — write-back dropped");
+      // forecast.json (Phase 1.5) failed: current.json data is still valid — do not
+      // touch isFetchOK so the current-weather sprites keep showing correctly.
+      // TAF fields retain their previous values (stale but not zeroed).
+      DEBUG_PRINTLN("[fetch] forecast.json failed — preserving all previous data");
     }
   }//wifi connected
 }//fetchWeatherData
@@ -599,14 +639,21 @@ WeatherCurrent fetchWeatherDataCurrent(const char*baseurl, const char*apikey, co
   float gust_mph = 0.0f;
   char urlBuffer[256];
   snprintf(urlBuffer, sizeof(urlBuffer), "%s%s%s%s%s", baseurl, apikey, urllocation, location, urlforecast);
+  // Normalize to HTTPS — WeatherAPI refuses plain HTTP connections
+  if (strncmp(urlBuffer, "http://", 7) == 0) {
+    char tmp[256];
+    snprintf(tmp, sizeof(tmp), "https://%s", urlBuffer + 7);
+    strlcpy(urlBuffer, tmp, sizeof(urlBuffer));
+  }
   std::strncpy(weather.location, location, sizeof(weather.location));
   WiFiClientSecure client;
   client.setInsecure(); // Tell the client NOT to check the SSL certificate
   //client.setCACert(rootCACertificate);
   HTTPClient http;
   http.useHTTP10(true);    // disable chunked encoding so getStream() works reliably
-  http.setConnectTimeout(5000);
-  http.setTimeout(10000); // Add read timeout
+  http.setConnectTimeout(10000);
+  http.setTimeout(30000); // forecast.json with days=3 is large; needs more time over TLS
+  http.addHeader("Connection", "close"); // ensure server closes stream after body, prevents IncompleteInput
   if (!http.begin(client, urlBuffer)) {
     DEBUG_PRINTLN("HTTP begin failed");
     return weather;
@@ -649,10 +696,12 @@ WeatherCurrent fetchWeatherDataCurrent(const char*baseurl, const char*apikey, co
       filter["forecast"]["forecastday"][0]["day"]["condition"]["text"]        = true;
       
 
-      yield();
-      vTaskDelay(pdMS_TO_TICKS(10));
-
-      DeserializationError error = deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
+      // WiFiClientSecure decrypts in fixed-size TLS records; stream.read() returns -1
+      // between records, which ArduinoJson treats as EOF → IncompleteInput.
+      // BlockingStream::read() yields until a byte arrives or the connection closes,
+      // so ArduinoJson always gets the full document.  Zero extra heap allocation.
+      BlockingStream bs(http.getStream(), 20000);
+      DeserializationError error = deserializeJson(doc, bs, DeserializationOption::Filter(filter));
       parseOK = !error;
       if (error) {
         DEBUG_PRINTF("JSON deserialization failed for [%s]: %s\n", urlBuffer, error.c_str());
@@ -699,6 +748,20 @@ WeatherCurrent fetchWeatherDataCurrent(const char*baseurl, const char*apikey, co
       JsonArray forecastdays = doc["forecast"]["forecastday"].as<JsonArray>();
       int ndays = (int)forecastdays.size();
       if (ndays > 3) ndays = 3;
+      // Zero-initialise slots the API didn't fill so stale values from a previous
+      // fetch cycle are never shown (can happen if the API returns fewer than 3 days).
+      for (int i = ndays; i < 3; i++) {
+        weather.TAFmaxtemp[i]        = 0.0f;
+        weather.TAFmintemp[i]        = 0.0f;
+        weather.TAFmaxwind_kts[i]    = 0.0f;
+        weather.TAFvis_miles[i]      = 0.0f;
+        weather.TAFprecip_mm[i]      = 0.0f;
+        weather.TAFsnow_cm[i]        = 0.0f;
+        weather.TAFchance_of_rain[i] = 0;
+        weather.TAFchance_of_snow[i] = 0;
+        weather.TAFday[i][0]         = '\0';
+        weather.TAFpathicon[i][0]    = '\0';
+      }
       for (int i = 0; i < ndays; i++) {
         JsonObject d = forecastdays[i]["day"];
         weather.TAFmaxtemp[i]        = (tUnit == 1) ? (d["maxtemp_f"]           | 0.0f) : (d["maxtemp_c"]           | 0.0f);
@@ -846,7 +909,7 @@ void fetchWeatherIcon(char*pathicon, const size_t sizepath, const char*baseurl, 
         uint8_t chunk[512];
         size_t written = 0;
         while (written < (size_t)size) {
-          size_t toRead = min(sizeof(chunk), (size_t)size - written);
+          size_t toRead = min((size_t)sizeof(chunk), (size_t)size - written);
           size_t n = stream.readBytes(chunk, toRead);
           if (n == 0) break;
           file.write(chunk, n);
@@ -1179,6 +1242,7 @@ bool SetupWifiConnect(const char *cstr_basic, char* hostname, size_t hostnameLEN
   //Preferences_deleteWifiCredential(false);//delete credential for test
 
   Preferences_readWifiCredential(strSSID,strPWD);
+  DEBUG_PRINTF("Loaded SSID: [%s] (len=%u)\n", strSSID, strlen(strSSID));
   Wifi_connect(strSSID, strPWD);
 
   EventBits_t bits = xEventGroupWaitBits(
@@ -1186,7 +1250,7 @@ bool SetupWifiConnect(const char *cstr_basic, char* hostname, size_t hostnameLEN
       WIFI_CONNECTED_BIT,
       pdFALSE,
       pdTRUE,
-      pdMS_TO_TICKS(10000)
+      pdMS_TO_TICKS(20000)
   );
 
   if (WiFi.status() == WL_CONNECTED){

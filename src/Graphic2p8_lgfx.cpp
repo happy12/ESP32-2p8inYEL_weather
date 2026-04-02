@@ -170,6 +170,9 @@ void convertIconToRgb(LGFX &mylcd, const char* pngpath, const uint16_t colorBack
                 }
                 free(saveBuf);
                 DEBUG_PRINTF("[icon] saved raw: %s\n", rawpath);
+            } else {
+                DEBUG_PRINTF("[icon] saveBuf malloc(%u) failed — heap free=%u max=%u\n",
+                             kIconBytes, ESP.getFreeHeap(), ESP.getMaxAllocHeap());
             }
         }
         iconSprite.deleteSprite();
@@ -183,21 +186,12 @@ void DrawWeatherCurrent(LGFX &mylcd, LGFX_Sprite &sprite, spriteGeom &geom, Weat
     if (!fontTime) return;
     if (!fontMain) return;
 
-    // Allocate main sprite FIRST — before any other malloc — to get the largest
-    // contiguous block. convertIconToRgb() has already run so there is no drawPng
-    // zlib churn here; the heap is as clean as it will be during this draw cycle.
-    // Retry up to 3 times with increasing delays — after a TLS fetch the heap may
-    // need extra time to coalesce a contiguous 38 KB block.
-    {
-        bool spriteOK = sprite.createSprite(geom.width, geom.heigth);
-        for (int attempt = 1; !spriteOK && attempt <= 3; attempt++) {
-            DEBUG_PRINTF("[draw] createSprite(%d,%d) OOM attempt %d — heap free=%u max=%u, waiting...\n",
-                         geom.width, geom.heigth, attempt, ESP.getFreeHeap(), ESP.getMaxAllocHeap());
-            vTaskDelay(pdMS_TO_TICKS(500 * attempt)); // 500ms, 1s, 1.5s
-            spriteOK = sprite.createSprite(geom.width, geom.heigth);
-        }
-        if (!spriteOK) {
-            DEBUG_PRINTF("[draw] createSprite(%d,%d) OOM FINAL — heap free=%u max=%u\n",
+    // Caller pre-allocates both sprites before any convertIconToRgb/zlib call (while
+    // max=77KB), then passes them in already-allocated.  Skip createSprite here.
+    // If pre-allocation failed (sprite.width()==0), fall back with a single attempt.
+    if (sprite.width() == 0) {
+        if (!sprite.createSprite(geom.width, geom.heigth)) {
+            DEBUG_PRINTF("[draw] createSprite(%d,%d) OOM — heap free=%u max=%u\n",
                          geom.width, geom.heigth, ESP.getFreeHeap(), ESP.getMaxAllocHeap());
             mylcd.fillRect(geom.x, geom.y, geom.width, geom.heigth, colorBad);
             return;
@@ -317,9 +311,9 @@ void DrawWeatherForecast(LGFX &mylcd, LGFX_Sprite &sprite, spriteGeom &geom, Wea
     if (!fontMain) return;
     if (iday>2) return;
 
-    // Allocate main sprite FIRST — before any other malloc — to get the largest
-    // contiguous block. convertIconToRgb() has already run so there is no drawPng
-    // zlib churn here; the heap is as clean as it will be during this draw cycle.
+    // Allocate sprite here — Phase 1.5 (Core 0) has already cached all .rgb icons so
+    // convertIconToRgb() in Phase 2 is always a no-op.  No zlib runs after this point,
+    // so allocating sequentially inside each DrawWeatherForecast call is safe.
     if (!sprite.createSprite(geom.width, geom.heigth)) {
         DEBUG_PRINTF("[draw] createSprite(%d,%d) OOM — heap free=%u max=%u\n",
                      geom.width, geom.heigth, ESP.getFreeHeap(), ESP.getMaxAllocHeap());

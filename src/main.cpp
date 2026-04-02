@@ -136,7 +136,12 @@ void setup() {
 #if MATDEBUG
   listDir("/");//check files, chart.umd.min.js
 #endif
-  clearFolder("/cache");//clear cache every boot
+  // Do NOT clear the icon cache on every boot.  Each PNG→RGB decode (zlib) permanently
+  // fragments the heap: one run drops max from 77KB → 34KB.  Clearing on boot forces 5
+  // fresh decodes every Phase 1.5, leaving max ~18KB — too little for the TLS handshake
+  // that forecast.json needs.  Icons persist safely across reboots; fetchWeatherIcon()
+  // already evicts the cache when LittleFS space is low.
+  // clearFolder("/cache");
 
   shouldRestart=false;
   timer_previousRestart=0L;
@@ -297,7 +302,29 @@ void MainCore1(void * pvParameters) {
   uint16_t colorBlue = lcd.color565(0, 0, 255);
   uint16_t colorCyan = lcd.color565(0, 255, 255);//0x07FFu; // RGB565 cyan
 
+  auto drawCaptivePortalMsg = [&]() {
+    char apName[64] = "";
+    if (xSemaphoreTake(xMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+      strlcpy(apName, charDeviceName, sizeof(apName));
+      xSemaphoreGive(xMutex);
+    }
+    lcd.fillScreen(colorBackground);
+    lcd.setTextDatum(lgfx::middle_center);
+    lcd.setTextColor(colorWhite, colorBackground);
+    lcd.setFont(&trebuc10pt8b);
+    lcd.drawString("WiFi not configured", 160, 55);
+    lcd.drawString("Connect to this network:", 160, 90);
+    lcd.setTextColor(colorCyan, colorBackground);
+    lcd.drawString(apName, 160, 125);
+    lcd.setTextColor(colorWhite, colorBackground);
+    lcd.drawString("then open a browser to", 160, 160);
+    lcd.drawString("enter WiFi credentials", 160, 190);
+  };
+
   lcd.fillScreen(colorBackground);
+  if (WiFi.status() != WL_CONNECTED) {
+    drawCaptivePortalMsg();
+  }
 
   for(;;) {
     unsigned long timer1_now = millis();
@@ -366,6 +393,12 @@ void MainCore1(void * pvParameters) {
   // Phase 1: current weather data is ready — draw C1 + C2
   if (gotCurrentData) {
     gotCurrentData = false;
+    if (WiFi.status() != WL_CONNECTED) {
+      drawCaptivePortalMsg();
+      waitingForForecast = true;
+      xSemaphoreGive(xSpriteDoneSem); // unblock Core 0 so it doesn't wait 30s
+      goto next_iteration;
+    }
     if (xSemaphoreTake(xMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
       localCurrent1 = weathercurrent1;
       localCurrent2 = weathercurrent2;
@@ -374,31 +407,21 @@ void MainCore1(void * pvParameters) {
       xSemaphoreGive(xMutex);
     }
 
-    // Wait for heap to recover from TLS fragmentation before the first zlib run.
-    // At startup the heap may need extra time to coalesce after WiFi/TLS init.
-    for (int _t = 0; _t < 40 && ESP.getMaxAllocHeap() < 40000; _t++) {
-      vTaskDelay(pdMS_TO_TICKS(100));
-    }
     DEBUG_PRINTF("[C1+C2] pre-draw: free=%u max=%u\n",
                  ESP.getFreeHeap(), ESP.getMaxAllocHeap());
 
-    // Interleave convert+draw: zlib runs first (heap is cleanest), then sprite.
-    // After zlib frees its allocs the heap may be slightly fragmented; the wait
-    // below gives the allocator a chance to coalesce before createSprite needs 38KB.
+    // Correct order: createSprite FIRST (from clean 77KB block), THEN convertIconToRgb.
+    // zlib runs in the remaining ~40KB — enough for these small icon PNGs.
+    // After draw+deleteSprite(C1): 37524 bytes coalesce with post-zlib space → ~74KB.
+    // C2 sprite (37760) fits from ~74KB. C2 icon is usually a cache hit → no-op.
+    spriteC1.createSprite(geomC1.width, geomC1.heigth);
+    DEBUG_PRINTF("[C1] post-alloc: free=%u max=%u\n", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
     convertIconToRgb(lcd, localCurrent1.pathicon, colorBackground);
-    for (int _t = 0; _t < 20 && ESP.getMaxAllocHeap() < 38500; _t++) {
-      vTaskDelay(pdMS_TO_TICKS(50));
-    }
-    DEBUG_PRINTF("[C1 post-cvt] free=%u max=%u\n",
-                 ESP.getFreeHeap(), ESP.getMaxAllocHeap());
     DrawWeatherCurrent(lcd, spriteC1, geomC1, localCurrent1, colorBackground, colorWhite, colorRed, colorCurrentFrame, &trebuc8pt8b, &trebuc10pt8b, temp_isDrawFrame, localForecastLoc == 1);
 
+    spriteC2.createSprite(geomC2.width, geomC2.heigth);
+    DEBUG_PRINTF("[C2] post-alloc: free=%u max=%u\n", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
     convertIconToRgb(lcd, localCurrent2.pathicon, colorBackground);
-    for (int _t = 0; _t < 20 && ESP.getMaxAllocHeap() < 38500; _t++) {
-      vTaskDelay(pdMS_TO_TICKS(50));
-    }
-    DEBUG_PRINTF("[C2 post-cvt] free=%u max=%u\n",
-                 ESP.getFreeHeap(), ESP.getMaxAllocHeap());
     DrawWeatherCurrent(lcd, spriteC2, geomC2, localCurrent2, colorBackground, colorWhite, colorRed, colorCurrentFrame, &trebuc8pt8b, &trebuc10pt8b, temp_isDrawFrame, localForecastLoc == 2);
 
     // If either location failed, retry sooner instead of waiting the full cycle.
@@ -417,6 +440,7 @@ void MainCore1(void * pvParameters) {
   // Phase 2: TAF icons are ready — draw F1 + F2 + F3
   if (gotForecastData) {
     gotForecastData = false;
+    if (WiFi.status() != WL_CONNECTED) goto next_iteration;
     // Re-copy locals so TAFpathicon[] reflects the freshly fetched icons
     if (xSemaphoreTake(xMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
       localCurrent1 = weathercurrent1;
@@ -443,6 +467,10 @@ void MainCore1(void * pvParameters) {
       }
     }
 
+    // Phase 1.5 (Core 0) pre-cached all .rgb icons before sending this notification,
+    // so convertIconToRgb() is a no-op cache hit here — no zlib, no heap churn.
+    // Each sprite is created sequentially inside DrawWeatherForecast (23320 bytes each),
+    // which is the right approach: smaller sprites, freed after each draw.
     convertIconToRgb(lcd, localForecastSrc.TAFpathicon[0], colorBackground);
     DrawWeatherForecast(lcd, spriteF1, geomF1, localForecastSrc, 0, colorBackground, colorWhite, colorRed, &trebuc9pt8b, &trebuc10pt8b);
 
@@ -456,6 +484,7 @@ void MainCore1(void * pvParameters) {
                  uxTaskGetStackHighWaterMark(NULL), ESP.getFreeHeap(), ESP.getMaxAllocHeap());
   }//gotForecastData
 
+  next_iteration:
     mainCoreHeartbeat++;// SIGNAL: "Core 1 is alive"
     checkHeapGuardianHealth(idleCheckMainCore1);//function to check if the heapMonitorTask task has frozen, this is like the supervisor to check if the task is asleep
 
@@ -470,42 +499,95 @@ void fetchWeatherTask(void *pvParameters) {
 
     for (;;) {
       ulTaskNotifyTake(pdTRUE, portMAX_DELAY); // sleep until Core 1 wakes us
-      DEBUG_PRINTF("[fetch] heap free=%u  max block=%u  stack min=%u\n",
-                   ESP.getFreeHeap(), ESP.getMaxAllocHeap(),
-                   uxTaskGetStackHighWaterMark(NULL));
+      {
+        uint32_t maxBlock = ESP.getMaxAllocHeap();
+        DEBUG_PRINTF("[fetch] heap free=%u  max block=%u  stack min=%u\n",
+                     ESP.getFreeHeap(), maxBlock,
+                     uxTaskGetStackHighWaterMark(NULL));
+        // Previous cycle's sprites are deleted before Core 1 fires the timer
+        // notification, so max should be ~77KB here.  If it has dropped below
+        // the C2 sprite size (37760) + margin, restart now — before Core 1 tries
+        // to allocate and draws red squares.
+        if (maxBlock < 42000) {
+          DEBUG_PRINTF("[fetch] max block too low for sprites — restarting\n");
+          vTaskDelay(pdMS_TO_TICKS(200));
+          ESP.restart();
+        }
+      }
 
-      // Phase 1: fetch weather data + current icons for both locations
-      fetchWeatherData(weathercurrent1, apiLocation1, 1);
-      fetchWeatherData(weathercurrent2, apiLocation2, 2);
+      // Phase 1: fetch both locations.  Pass currentOnly=false so fetchWeatherData's
+      // internal doForecast logic selects the right URL per location:
+      //   forecast location  → forecast.json (current + 3-day forecast in one TLS call)
+      //   other location     → current.json  (current only, small response)
+      // Moving the forecast.json fetch here (before sprites are drawn) is safe because
+      // Phase 1 always starts with a clean heap (~77 KB) — previous cycle's sprites
+      // were freed before Core 1 fired the timer notification.
+      // This eliminates the Phase 1.5 TLS connection, reducing TLS handshakes from 3
+      // to 2 per cycle and cutting heap fragmentation by ~33%.
+      fetchWeatherData(weathercurrent1, apiLocation1, 1, /*currentOnly=*/false);
+      fetchWeatherData(weathercurrent2, apiLocation2, 2, /*currentOnly=*/false);
 
-      // Startup guard: if both locations failed (WiFi/DNS not fully ready), retry once
-      // after a short delay before telling Core 1 to draw red squares.
+      // Startup guard: if a location failed (WiFi/DNS not fully ready), retry once.
       if (!weathercurrent1.isFetchOK) {
         DEBUG_PRINTLN("[fetch] location 1 failed — retry in 5s");
         vTaskDelay(pdMS_TO_TICKS(5000));
-        fetchWeatherData(weathercurrent1, apiLocation1, 1);
+        fetchWeatherData(weathercurrent1, apiLocation1, 1, /*currentOnly=*/false);
       }
       if (!weathercurrent2.isFetchOK) {
         DEBUG_PRINTLN("[fetch] location 2 failed — retry in 5s");
         vTaskDelay(pdMS_TO_TICKS(5000));
-        fetchWeatherData(weathercurrent2, apiLocation2, 2);
+        fetchWeatherData(weathercurrent2, apiLocation2, 2, /*currentOnly=*/false);
       }
 
-      xTaskNotifyGive(MainCode1Task); // Phase 1: current data ready — Core 1 draws C1+C2
+      xTaskNotifyGive(MainCode1Task); // Phase 1: data ready — Core 1 draws C1+C2
 
-      // Phase 2: wait until Core 1 has finished C1+C2 sprites (frees 38KB heap blocks)
-      // THEN fetch TAF icons. This prevents HTTP connections from fragmenting the heap
-      // exactly when createSprite needs a large contiguous block.
-      xSemaphoreTake(xSpriteDoneSem, pdMS_TO_TICKS(30000)); // waits for Core 1's signal
+      // Phase 1.5: wait for Core 1 to free the C1+C2 sprites, then fetch TAF icons
+      // and run convertIconToRgb.  No TLS here — forecast data is already in memory
+      // from Phase 1.  The semaphore still guards against TAFpathicon[] writes racing
+      // with Core 1's Phase 2 read.
+      xSemaphoreTake(xSpriteDoneSem, pdMS_TO_TICKS(30000));
 
       uint8_t temp_forecastLoc = 1;
       if (xSemaphoreTake(xMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
         temp_forecastLoc = apiForecastLocation;
         xSemaphoreGive(xMutex);
       }
+      DEBUG_PRINTF("[fetch1.5] heap free=%u  max block=%u\n",
+                   ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+
       if (temp_forecastLoc == 1) fetchWeatherTAFIcons(weathercurrent1);
       else                       fetchWeatherTAFIcons(weathercurrent2);
-      xTaskNotifyGive(MainCode1Task); // Phase 2: TAF icons ready — Core 1 draws F1+F2+F3
+
+      // Convert all icons to .rgb HERE — this is the cleanest heap point in the cycle:
+      // C1+C2 sprites have been deleted (75KB freed back), and TLS is done.
+      // max is back to ~77KB, giving zlib the contiguous 32KB it needs.
+      // On cache hit (every cycle after the first): instant no-op, max stays 77KB.
+      // This ensures that when Core 1 pre-allocates sprites next cycle, convertIconToRgb
+      // finds .rgb already cached and does nothing, so max stays 77KB for pre-alloc.
+      {
+        char path1[24]={}, path2[24]={};
+        char tpath0[24]={}, tpath1[24]={}, tpath2[24]={};
+        WeatherCurrent* wfcast = (temp_forecastLoc == 1) ? &weathercurrent1 : &weathercurrent2;
+        if (xSemaphoreTake(xMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+          strlcpy(path1, weathercurrent1.pathicon, sizeof(path1));
+          strlcpy(path2, weathercurrent2.pathicon, sizeof(path2));
+          strlcpy(tpath0, wfcast->TAFpathicon[0], sizeof(tpath0));
+          strlcpy(tpath1, wfcast->TAFpathicon[1], sizeof(tpath1));
+          strlcpy(tpath2, wfcast->TAFpathicon[2], sizeof(tpath2));
+          xSemaphoreGive(xMutex);
+        }
+        // Convert one at a time — each zlib run fragments ~43KB; subsequent runs work
+        // on the remaining heap. All five fit because we start from max=77KB.
+        if (path1[0])  convertIconToRgb(lcd, path1,  colorBackground);
+        if (path2[0])  convertIconToRgb(lcd, path2,  colorBackground);
+        if (tpath0[0]) convertIconToRgb(lcd, tpath0, colorBackground);
+        if (tpath1[0]) convertIconToRgb(lcd, tpath1, colorBackground);
+        if (tpath2[0]) convertIconToRgb(lcd, tpath2, colorBackground);
+        DEBUG_PRINTF("[fetch1.5] after icon cache: free=%u max=%u\n",
+                     ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+      }
+
+      xTaskNotifyGive(MainCode1Task); // Phase 2: TAF data + icons ready — Core 1 draws F1+F2+F3
     }//for
 }//fetchWeatherTask
 
@@ -516,6 +598,18 @@ void heapMonitorTask(void *pvParameters) {
     for (;;) {
         //check fragmentation
         checkMemoryHealth(86.f);//85 or 88 is recommended, beyond 90 the esp32 can freeze
+
+        // Restart before sprite OOM rather than after.
+        // C2 sprite = 160×118×2 = 37760 bytes (largest single allocation).
+        // Threshold: 42000 = 37760 + ~4KB margin.
+        // Old value of 20000 was far too low — sprites were already failing for hours
+        // before the monitor triggered.  At 42000 the restart is invisible: all sprites
+        // still drew correctly on the previous cycle.
+        if (ESP.getMaxAllocHeap() < 42000) {
+          DEBUG_PRINTF("Heap max block (%u) below sprite threshold — restarting\n", ESP.getMaxAllocHeap());
+          vTaskDelay(pdMS_TO_TICKS(500));
+          ESP.restart();
+        }
 
         //check heap fragmentation
         if (!heap_caps_check_integrity_all(false)) {

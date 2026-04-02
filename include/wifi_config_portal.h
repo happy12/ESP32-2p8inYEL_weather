@@ -50,7 +50,7 @@ void triggerTaskSavePreference(uint32_t delayMS);
 bool loadPreferences();
 void printStreamToSerial(HTTPClient &http);
 
-void fetchWeatherData(WeatherCurrent &wcurrent, const char *apiLoc, const uint8_t locationIndex);
+void fetchWeatherData(WeatherCurrent &wcurrent, const char *apiLoc, const uint8_t locationIndex, bool currentOnly = false);
 void fetchWeatherTAFIcons(WeatherCurrent &wcurrent);
 WeatherCurrent fetchWeatherDataCurrent(const char*baseurl, const char*apikey, const char*urllocation, const char*location, const char*urlforecast, const uint8_t tUnit, const uint8_t tDigit, const uint8_t wUnit, const uint8_t wDigit);
 void fetchWeatherIcon(char*pathicon, const size_t sizepath, const char*baseurl, const char*urlicon, const char*foldercache="/cache");

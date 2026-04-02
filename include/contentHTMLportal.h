@@ -26,7 +26,7 @@ const char contentHTMLportal[] PROGMEM = R"rawliteral(
         }
         async function refreshWiFi() {
           const btn = document.querySelector('.refresh-btn');
-          const select = document.querySelector("select[name='ssid']");
+          const select = document.querySelector("select[name='ssid_scan']");
           btn.innerText = "Scanning...";
           btn.disabled = true;
 
@@ -34,7 +34,7 @@ const char contentHTMLportal[] PROGMEM = R"rawliteral(
             const response = await fetch('/scanWifi');
             if (!response.ok) throw new Error("Server Busy");
             const html = await response.text();
-            select.innerHTML = html;
+            select.innerHTML = '<option value="">-- select --</option>' + html;
             btn.innerText = "Refresh WiFi Network List";
           } catch (err) {
             console.error(err);
@@ -78,8 +78,10 @@ const char contentHTMLportal[] PROGMEM = R"rawliteral(
 
       <form action='/save' method='POST'>
 
-      SSID:<br><select name='ssid'>...</select>
-    
+      SSID:<br>
+      <select name='ssid_scan' onchange="document.getElementById('ssid_input').value=this.value;">...</select>
+      <input type='text' id='ssid_input' name='ssid' placeholder='Select above or type SSID manually' autocomplete='off' autocorrect='off' autocapitalize='none' spellcheck='false'>
+
       Password:<br><input type='password' id='pw' name='password' placeholder='Password'>
     
       <div style='margin-bottom:20px;'>
