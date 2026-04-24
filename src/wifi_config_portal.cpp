@@ -99,7 +99,7 @@ void startMDNS() {
       //MDNS.addService("workstation", "tcp", 9);
       DEBUG_PRINTF("mDNS responder started: %s.local",mdnsHostname);
     }
-  }//mdnsHostname    
+  }//mdnsHostname
 }//startMDNS
 void stopMDNS() {
     MDNS.end();
@@ -252,7 +252,7 @@ bool savePreferences() {
 
     preferences.end();
     return ok;
-  }//if  
+  }//if
   return false;
 }//savePreferences
 
@@ -274,7 +274,7 @@ bool loadPreferences() {
     windUnit = preferences.getUChar("WindUnit", 0);//default KT
     windDigit = preferences.getUChar("WindDigit", 0);
     isDrawCurrentFrame = preferences.getBool("drawFrame", false);
-    
+
 
     len = preferences.getString("apiUrlBase", apiUrlBase, sizeof(apiUrlBase));
     if (len == 0) strlcpy(apiUrlBase, "https://api.weatherapi.com/v1/current.json?key=", sizeof(apiUrlBase));
@@ -322,7 +322,7 @@ void handleSaveWifiCredentials(AsyncWebServerRequest *request) {
         }
         else{
           DEBUG_PRINTLN("Nothing to save.. empty SSID");
-        }        
+        }
         request->send(200, "text/html", "Settings saved! ESP32 is restarting to connect...");
         vTaskDelay(pdMS_TO_TICKS(2000));// Give the ESP32 a second to send the response before restarting
         DEBUG_PRINTLN("Requesting a restart");
@@ -438,7 +438,7 @@ void SsidScanner(AsyncResponseStream *stream) {
   for (int i = 0; i < n; ++i) {
     int id = indices[i]; // Get the index of the i-th strongest network
     dbm_to_SignalBars(strBarRSSI,WiFi.RSSI(id));
-    stream->printf("<option value='%s'>%s (%s)%s</option>", 
+    stream->printf("<option value='%s'>%s (%s)%s</option>",
             WiFi.SSID(id).c_str(), WiFi.SSID(id).c_str(), strBarRSSI,
             (WiFi.encryptionType(id) == WIFI_AUTH_OPEN ? "" : " 🔒") );
   }//for
@@ -447,7 +447,7 @@ void SsidScanner(AsyncResponseStream *stream) {
 }//SsidScanner
 
 void StartWifiCaptivePortal(const char *cstr_basic, char* hostname, size_t hostnameLEN) {
-  char str_espID[13];
+  char str_espID[16];
   DEBUG_PRINT("Getting ESP ID...");
   GetESPid(str_espID, sizeof(str_espID));
   DEBUG_PRINTLN(str_espID);
@@ -477,16 +477,10 @@ void StartWifiCaptivePortal(const char *cstr_basic, char* hostname, size_t hostn
   });
   server.on("/mac", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(200, "text/plain", WiFi.macAddress().c_str());
-    /*char macaddress[18];
-    strlcpy(macaddress, WiFi.macAddress().c_str(), sizeof(macaddress));
-    AsyncResponseStream *stream = request->beginResponseStream("text/html"); 
-    stream->printf(macaddress);
-    request->send(stream);*/
   });
   //this handler should be last, it is the captive portal to setup the wifi
   server.addHandler(new CaptiveRequestHandler()).setFilter(ON_AP_FILTER);  // only when requested from AP
   snprintf(hostname, hostnameLEN, "%s", str_withID);
-  //return str_withID;
 }//StartWifiCaptivePortal
 
 void printStreamToSerial(HTTPClient &http) {
@@ -504,7 +498,7 @@ void printStreamToSerial(HTTPClient &http) {
         }//while
         vTaskDelay(pdMS_TO_TICKS(1)); // Give the background WiFi tasks a moment to breathe
     }//while
-  DEBUG_PRINTLN("\n--- Response Body End ---");  
+  DEBUG_PRINTLN("\n--- Response Body End ---");
 }//printStreamToSerial
 
 void fetchWeatherData(WeatherCurrent &wcurrent, const char *apiLoc, const uint8_t locationIndex, bool currentOnly) {
@@ -694,7 +688,7 @@ WeatherCurrent fetchWeatherDataCurrent(const char*baseurl, const char*apikey, co
       filter["forecast"]["forecastday"][0]["day"]["daily_chance_of_snow"]     = true;
       filter["forecast"]["forecastday"][0]["day"]["condition"]["icon"]        = true;
       filter["forecast"]["forecastday"][0]["day"]["condition"]["text"]        = true;
-      
+
 
       // WiFiClientSecure decrypts in fixed-size TLS records; stream.read() returns -1
       // between records, which ArduinoJson treats as EOF → IncompleteInput.
@@ -733,8 +727,8 @@ WeatherCurrent fetchWeatherDataCurrent(const char*baseurl, const char*apikey, co
         weather.wind = wind_mph;
         weather.gust = gust_mph;
       }
-      
-      
+
+
       // strings — MUST be copied before doc goes out of scope
       memset(weather.location, 0, sizeof(weather.location));
       memset(weather.condition, 0, sizeof(weather.condition));
@@ -969,7 +963,7 @@ void SetupWifiNormalMode(const char *cstr_basic, char* hostname, size_t hostname
         }
         char buffer[32];
         strftime(buffer, sizeof(buffer), "%H:%M:%S %Z", &timeinfo);
-        AsyncResponseStream *stream = request->beginResponseStream("text/html"); 
+        AsyncResponseStream *stream = request->beginResponseStream("text/html");
         stream->printf(buffer);
         request->send(stream);
       });
@@ -1004,7 +998,7 @@ void SetupWifiNormalMode(const char *cstr_basic, char* hostname, size_t hostname
     request->send(stream);
   });///api/check-crash
 
-  
+
   //the following line is for a dashboard, and can be ommitted if the device does not need to show data or take input from/to user:
   server.on("/fetchPreferences", HTTP_GET, [](AsyncWebServerRequest *request) {
       AsyncResponseStream *stream = request->beginResponseStream("application/json");
@@ -1057,7 +1051,7 @@ void SetupWifiNormalMode(const char *cstr_basic, char* hostname, size_t hostname
         stream->printf("\"windUnit\":%d,", temp_windUnit);
         stream->printf("\"windDigit\":%d,", temp_windDigit);
         stream->printf("\"isDrawFrame\":%s,", temp_isDrawCurrentFrame ? "true" : "false");
-        
+
         stream->printf("\"colorBackgnd\":%d,", temp_colorBackground);
         stream->printf("\"colorFrame\":%d,", temp_colorCurrentFrame);
         stream->printf("\"api_urlBase\":\"%s\",", temp_apiUrlBase);
@@ -1068,9 +1062,9 @@ void SetupWifiNormalMode(const char *cstr_basic, char* hostname, size_t hostname
         stream->printf("\"api_urlForecast\":\"%s\",", temp_apiUrlForecast);
         //stream->printf("\"api_daysForecast\":%d,", temp_apiDaysForecast);
         stream->printf("\"api_ForecastLoc\":%d", temp_apiForecastLocation);
-        
 
-  
+
+
         stream->print("}");
         request->send(stream);
       }
@@ -1153,7 +1147,7 @@ void SetupWifiNormalMode(const char *cstr_basic, char* hostname, size_t hostname
     capInt8(temp_windUnit, 0, 2);
     capInt8(temp_windDigit, 0, 1);
 
-    
+
 
     DEBUG_PRINTLN("Data received succesfully. Now store into variables...");
     if (xSemaphoreTake(xMutex, pdMS_TO_TICKS(100)) == pdTRUE) {//increase from 50 to 100 if too many 'Busy' response
@@ -1179,7 +1173,7 @@ void SetupWifiNormalMode(const char *cstr_basic, char* hostname, size_t hostname
       xSemaphoreGive(xMutex);
       DEBUG_PRINTLN("Done!");
 
-      
+
 
       DEBUG_PRINT("Refreshing Time Server...");
       InitTimeRTC();
@@ -1222,11 +1216,11 @@ void SetupWifiNormalMode(const char *cstr_basic, char* hostname, size_t hostname
       }
       request->redirect("/");
   });
-  
+
 
   server.on("/", HTTP_GET, handleRoot);//the main page
 
-  
+
 }//SetupWifiNormalMode
 
 //return true means it is connected to the internet, return false means it created the captive portal

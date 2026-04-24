@@ -76,11 +76,7 @@ void setup() {
 
   DEBUG_PRINTF("Display Width: %d Height: %d\n", lcd.width(), lcd.height());//320x240
 
-  DrawSplashScreen(lcd, StayOnTarget320, STAYONTARGET320_WIDTH, STAYONTARGET320_HEIGHT);
-
-//Serial.printf("CPU cores: %d\n", ESP.getChipCores()); //2
-//Serial.printf("Chip model: %s\n", ESP.getChipModel()); //ESP32-D0WD-V3
-//Serial.printf("CPU freq: %d MHz\n", ESP.getCpuFreqMHz()); //240 Mhz
+  //DrawSplashScreen(lcd, StayOnTarget320, STAYONTARGET320_WIDTH, STAYONTARGET320_HEIGHT);
 
   DEBUG_PRINTLN("Initializing Mutex...");
   xMutex = xSemaphoreCreateMutex();//initialize as soon as possible, but after the serial

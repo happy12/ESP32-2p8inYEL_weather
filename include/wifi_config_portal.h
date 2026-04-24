@@ -16,7 +16,6 @@
 #include "utilFile.h"
 #include "contentHTMLportal.h"
 #include "contentHTMLroot.h"
-#include "certificate_weather.h"
 
 
 extern DNSServer dnsServer;
